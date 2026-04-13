@@ -4,7 +4,7 @@ This document is normative for the Python package in this directory (`promo_engi
 
 ## Scope
 
-- **In scope**: `PromotionEngine` orchestration; `PromotionConstraints` (time window, weekday, daypart, customer tags); `PercentOffSkusPromotion` (percentage off SKUs, optional `max_discount`); `FixedAmountOffPromotion`; `ThresholdPromotion` (spend threshold, fixed reward); `BuyXGetYPromotion` (bundle free units at cheapest unit prices); `Money` / cart math; `PriceSummary` and `AppliedDiscount` explainability.
+- **In scope**: `PromotionEngine` orchestration; `PromotionConstraints` (time window, weekday, daypart, customer tags); `PercentOffSkusPromotion` (percentage off SKUs, optional `max_discount`); `FixedAmountOffPromotion`; `ThresholdPromotion` (spend threshold, fixed reward); `BuyXGetYPromotion` (bundle free units at cheapest unit prices); `BuyXPayYPromotion` (buy X pay Y / e.g. 3-for-2); `Money` / cart math; `PriceSummary` and `AppliedDiscount` explainability.
 - **Not covered here**: `PricingContext.channel` targeting (field exists for future use).
 
 ## Types (glossary)
@@ -59,6 +59,17 @@ If there are no eligible lines, the promotion is not applicable (no `AppliedDisc
 
 `BuyXGetYPromotion`: parameters `buy_x` and `get_y` (both ≥ 1). For `target_sku`, total quantity across lines determines how many full bundles of size `buy_x + get_y` exist. For each bundle, **`get_y`** units are treated as free; discount value is the sum of the **cheapest** free unit prices (expanded per quantity, sorted by `Money`, multi-line safe).
 
+## Buy X pay Y (same SKU, e.g. 3-for-2)
+
+`BuyXPayYPromotion`: parameters **`buy_x`** (≥ 2) and **`pay_y`** with **`1 <= pay_y < buy_x`**. Applies only to **`target_sku`**. Pool quantity `Q` and line subtotals for that SKU.
+
+- **`number_of_groups`** = `Q // buy_x` (integer division; partial groups do not count).
+- **`free_slots`** = `(buy_x - pay_y) * number_of_groups` (equivalent number of free items).
+- **Discount** (single unit price `P` on all lines): `P * free_slots` = `P * (buy_x - pay_y) * number_of_groups`, matching “`(X−Y)` free per group”.
+- **Discount** (mixed unit prices on the same SKU): **`pool_subtotal * free_slots / Q`** where `pool_subtotal` is the sum of line subtotals for `target_sku` (same numeric result as uniform `P` when all units share one price).
+
+Examples (€10 unit, `buy_x=3`, `pay_y=2`): 3 units → €10 off; 4 units → one full group → still €10 off; 6 units → two groups → €20 off.
+
 ## Multi-promotion behavior
 
 Each promotion exposes **`priority`** (int, default `0`) and **`stackable`** (bool, default `True`).
@@ -111,7 +122,7 @@ Explainability includes promotion id, **10%**, and **SKU_A** (and must not attri
 This spec matches the intended behavior of:
 
 - `promo_engine.domain` (`Money`, `Cart`, `LineItem`, `PriceSummary`, `AppliedDiscount`, …)
-- `promo_engine.promotions` (`PromotionConstraints`, `PercentOffSkusPromotion`, `FixedAmountOffPromotion`, `ThresholdPromotion`, `BuyXGetYPromotion`)
+- `promo_engine.promotions` (`PromotionConstraints`, `PercentOffSkusPromotion`, `FixedAmountOffPromotion`, `ThresholdPromotion`, `BuyXGetYPromotion`, `BuyXPayYPromotion`)
 - `promo_engine.engine.PromotionEngine`
 
 `PromotionEngine.price` implements checkout totals exactly as in **Checkout totals (authoritative)**: it sums nominal `AppliedDiscount.amount` values into a raw total `R`, then sets `discount_total = min(subtotal, R)` and `total = subtotal - discount_total` (see `promo_engine/engine.py`). That matches the formulas above, including when `R > subtotal`.

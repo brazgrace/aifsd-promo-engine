@@ -37,5 +37,5 @@ poetry build
 | Module | Purpose |
 |--------|---------|
 | `promo_engine.domain` | `Money`, cart types, `PriceSummary`, `AppliedDiscount` |
-| `promo_engine.promotions` | `Promotion`, `PromotionConstraints`, `PercentOffSkusPromotion`, `FixedAmountOffPromotion`, `ThresholdPromotion`, `BuyXGetYPromotion` |
+| `promo_engine.promotions` | `Promotion`, `PromotionConstraints`, `PercentOffSkusPromotion`, `FixedAmountOffPromotion`, `ThresholdPromotion`, `BuyXGetYPromotion`, `BuyXPayYPromotion` |
 | `promo_engine.engine` | `PromotionEngine.price` (priority sort, stackable vs exclusive stop-rule, trace ids) |

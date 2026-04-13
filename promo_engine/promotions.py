@@ -11,6 +11,7 @@ from decimal import Decimal
 from promo_engine.domain import (
     AppliedDiscount,
     Cart,
+    LineItem,
     Money,
     Percentage,
     PricingContext,
@@ -388,6 +389,103 @@ class BuyXGetYPromotion(Promotion):
         details = (
             f"promotion_id={self._promotion_id} "
             f"buy_x={self._buy_x} get_y={self._get_y} sku={self._target_sku}"
+        )
+        return [
+            AppliedDiscount(
+                promotion_id=self._promotion_id,
+                amount=discount,
+                target="line",
+                details=details,
+                allocations={self._target_sku: discount},
+            )
+        ]
+
+
+class BuyXPayYPromotion(Promotion):
+    """
+    Buy ``buy_x`` units of ``target_sku``, pay for only ``pay_y`` per group (e.g. 3-for-2).
+
+    For every full group of ``buy_x`` items, ``(buy_x - pay_y)`` items are treated as
+    free. With ``number_of_groups = total_qty // buy_x`` and a single unit price,
+    discount equals ``unit_price * (buy_x - pay_y) * number_of_groups``.
+
+    For mixed unit prices on the same SKU, discount is the same fraction of the
+    pooled line subtotals: ``pool_subtotal * free_slots / total_qty`` where
+    ``free_slots = (buy_x - pay_y) * number_of_groups``.
+    """
+
+    def __init__(
+        self,
+        promotion_id: PromotionId,
+        target_sku: Sku,
+        buy_x: int,
+        pay_y: int,
+        *,
+        priority: int = 0,
+        stackable: bool = True,
+        constraints: PromotionConstraints | None = None,
+    ) -> None:
+        if buy_x < 2:
+            raise ValueError("buy_x must be >= 2")
+        if pay_y < 1 or pay_y >= buy_x:
+            raise ValueError("pay_y must satisfy 1 <= pay_y < buy_x")
+        self._promotion_id = promotion_id
+        self._target_sku = target_sku
+        self._buy_x = buy_x
+        self._pay_y = pay_y
+        self._priority = priority
+        self._stackable = stackable
+        self._constraints = constraints or PromotionConstraints()
+
+    @property
+    def id(self) -> PromotionId:
+        return self._promotion_id
+
+    @property
+    def priority(self) -> int:
+        return self._priority
+
+    @property
+    def stackable(self) -> bool:
+        return self._stackable
+
+    def _lines_for_sku(self, cart: Cart) -> list[LineItem]:
+        return [
+            line
+            for line in cart.lines
+            if line.product.sku == self._target_sku and line.quantity.value > 0
+        ]
+
+    def _total_qty(self, cart: Cart) -> int:
+        return sum(line.quantity.value for line in self._lines_for_sku(cart))
+
+    def _pool_subtotal(self, cart: Cart) -> Money:
+        lines = self._lines_for_sku(cart)
+        if not lines:
+            return Money(Decimal("0"))
+        return sum((line.subtotal() for line in lines), Money(Decimal("0")))
+
+    def _free_item_slots(self, cart: Cart) -> int:
+        q = self._total_qty(cart)
+        groups = q // self._buy_x
+        return (self._buy_x - self._pay_y) * groups
+
+    def is_applicable(self, cart: Cart, context: PricingContext) -> bool:
+        if not self._constraints.allows(context):
+            return False
+        return self._free_item_slots(cart) > 0
+
+    def apply(self, cart: Cart, context: PricingContext) -> list[AppliedDiscount]:
+        free_slots = self._free_item_slots(cart)
+        qty = self._total_qty(cart)
+        if free_slots <= 0 or qty <= 0:
+            return []
+        pool = self._pool_subtotal(cart)
+        scale = Decimal(free_slots) / Decimal(qty)
+        discount = pool * scale
+        details = (
+            f"promotion_id={self._promotion_id} "
+            f"buy_x={self._buy_x} pay_y={self._pay_y} sku={self._target_sku}"
         )
         return [
             AppliedDiscount(

@@ -18,6 +18,7 @@ from promo_engine.domain import (
 from promo_engine.engine import PromotionEngine
 from promo_engine.promotions import (
     BuyXGetYPromotion,
+    BuyXPayYPromotion,
     FixedAmountOffPromotion,
     PercentOffSkusPromotion,
     PromotionConstraints,
@@ -198,6 +199,39 @@ class TestThresholdPromotion(unittest.TestCase):
             reward=Money(Decimal("5.00")),
         )
         self.assertFalse(promo.is_applicable(cart, ctx()))
+
+
+class TestBuyXPayY(unittest.TestCase):
+    """Buy X pay Y (e.g. 3-for-2): acceptance examples and validation."""
+
+    def test_three_for_two_three_units(self) -> None:
+        product = Product(Sku("SKU_A"), "A", "c")
+        cart = Cart([LineItem(product, Quantity(3), Money(Decimal("10.00")))])
+        promo = BuyXPayYPromotion(PromotionId("3F2"), Sku("SKU_A"), buy_x=3, pay_y=2)
+        summary = PromotionEngine([promo]).price(cart, ctx())
+        self.assertEqual(summary.discount_total, Money(Decimal("10.00")))
+
+    def test_three_for_two_four_units(self) -> None:
+        product = Product(Sku("SKU_A"), "A", "c")
+        cart = Cart([LineItem(product, Quantity(4), Money(Decimal("10.00")))])
+        promo = BuyXPayYPromotion(PromotionId("3F2"), Sku("SKU_A"), buy_x=3, pay_y=2)
+        summary = PromotionEngine([promo]).price(cart, ctx())
+        self.assertEqual(summary.discount_total, Money(Decimal("10.00")))
+
+    def test_three_for_two_six_units(self) -> None:
+        product = Product(Sku("SKU_A"), "A", "c")
+        cart = Cart([LineItem(product, Quantity(6), Money(Decimal("10.00")))])
+        promo = BuyXPayYPromotion(PromotionId("3F2"), Sku("SKU_A"), buy_x=3, pay_y=2)
+        summary = PromotionEngine([promo]).price(cart, ctx())
+        self.assertEqual(summary.discount_total, Money(Decimal("20.00")))
+
+    def test_invalid_pay_y_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            BuyXPayYPromotion(PromotionId("X"), Sku("A"), buy_x=3, pay_y=3)
+        with self.assertRaises(ValueError):
+            BuyXPayYPromotion(PromotionId("X"), Sku("A"), buy_x=3, pay_y=0)
+        with self.assertRaises(ValueError):
+            BuyXPayYPromotion(PromotionId("X"), Sku("A"), buy_x=1, pay_y=1)
 
 
 class TestBuyXGetY(unittest.TestCase):
