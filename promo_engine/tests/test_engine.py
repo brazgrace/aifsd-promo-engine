@@ -17,14 +17,32 @@ from promo_engine.engine import PromotionEngine
 class StubPromotion(Promotion):
     """A stub promotion for testing that can be configured with specific behavior."""
 
-    def __init__(self, promo_id: PromotionId, applicable: bool = True, discounts: list[AppliedDiscount] = None):
+    def __init__(
+        self,
+        promo_id: PromotionId,
+        applicable: bool = True,
+        discounts: list[AppliedDiscount] | None = None,
+        *,
+        priority: int = 0,
+        stackable: bool = True,
+    ):
         self._id = promo_id
         self._applicable = applicable
         self._discounts = discounts or []
+        self._priority = priority
+        self._stackable = stackable
 
     @property
     def id(self) -> PromotionId:
         return self._id
+
+    @property
+    def priority(self) -> int:
+        return self._priority
+
+    @property
+    def stackable(self) -> bool:
+        return self._stackable
 
     def is_applicable(self, cart: Cart, context: PricingContext) -> bool:
         return self._applicable
@@ -76,6 +94,8 @@ class TestPromotionEngine(unittest.TestCase):
         self.assertEqual(summary.discount_total, Money(Decimal("0.00")))
         self.assertEqual(summary.total, Money(Decimal("45.00")))
         self.assertEqual(len(summary.applied_discounts), 0)
+        self.assertEqual(summary.not_applicable_promotion_ids, ())
+        self.assertEqual(summary.skipped_due_to_combination_ids, ())
 
     def test_single_applicable_promotion(self):
         """Apply a single applicable promotion to a cart."""
@@ -272,6 +292,91 @@ class TestPromotionEngine(unittest.TestCase):
             summary.applied_discounts[0].amount + summary.applied_discounts[1].amount,
             Money(Decimal("16.00")),
         )
+
+    def test_priority_orders_application_before_stack(self):
+        """Higher priority runs first; ties broken by promotion id string."""
+        cart = Cart([LineItem(self.product_a, Quantity(1), Money(Decimal("10.00")))])
+        d_low = AppliedDiscount(
+            promotion_id=PromotionId("P-Z"),
+            amount=Money(Decimal("1.00")),
+            target="line",
+            details="low",
+            allocations=None,
+        )
+        d_high = AppliedDiscount(
+            promotion_id=PromotionId("P-A"),
+            amount=Money(Decimal("2.00")),
+            target="line",
+            details="high",
+            allocations=None,
+        )
+        # List order is Z then A, but A has higher priority so A applies first in summary list
+        engine = PromotionEngine(
+            [
+                StubPromotion(PromotionId("P-Z"), True, [d_low], priority=0),
+                StubPromotion(PromotionId("P-A"), True, [d_high], priority=10),
+            ]
+        )
+        summary = engine.price(cart, self.context)
+        self.assertEqual(summary.applied_discounts[0].promotion_id, PromotionId("P-A"))
+        self.assertEqual(summary.applied_discounts[1].promotion_id, PromotionId("P-Z"))
+
+    def test_non_stackable_stops_lower_priority_promotions(self):
+        """After a non-stackable promotion applies, later promotions are skipped (by sort order)."""
+        cart = Cart([LineItem(self.product_a, Quantity(1), Money(Decimal("10.00")))])
+        d1 = AppliedDiscount(
+            promotion_id=PromotionId("STACK"),
+            amount=Money(Decimal("1.00")),
+            target="line",
+            details="stack",
+            allocations=None,
+        )
+        d2 = AppliedDiscount(
+            promotion_id=PromotionId("EXCL"),
+            amount=Money(Decimal("2.00")),
+            target="line",
+            details="exclusive",
+            allocations=None,
+        )
+        d3 = AppliedDiscount(
+            promotion_id=PromotionId("LATE"),
+            amount=Money(Decimal("99.00")),
+            target="line",
+            details="never",
+            allocations=None,
+        )
+        engine = PromotionEngine(
+            [
+                StubPromotion(PromotionId("LATE"), True, [d3], priority=0, stackable=True),
+                StubPromotion(PromotionId("EXCL"), True, [d2], priority=5, stackable=False),
+                StubPromotion(PromotionId("STACK"), True, [d1], priority=10, stackable=True),
+            ]
+        )
+        summary = engine.price(cart, self.context)
+        self.assertEqual(len(summary.applied_discounts), 2)
+        self.assertEqual(summary.discount_total, Money(Decimal("3.00")))
+        self.assertEqual(summary.skipped_due_to_combination_ids, (PromotionId("LATE"),))
+        self.assertEqual(summary.not_applicable_promotion_ids, ())
+
+    def test_not_applicable_promotion_ids_recorded(self):
+        """Promotions that are not applicable are listed on the summary."""
+        cart = Cart([LineItem(self.product_a, Quantity(1), Money(Decimal("10.00")))])
+        d_ok = AppliedDiscount(
+            promotion_id=PromotionId("OK"),
+            amount=Money(Decimal("1.00")),
+            target="line",
+            details="ok",
+            allocations=None,
+        )
+        engine = PromotionEngine(
+            [
+                StubPromotion(PromotionId("NOPE"), False, [], priority=10),
+                StubPromotion(PromotionId("OK"), True, [d_ok], priority=0),
+            ]
+        )
+        summary = engine.price(cart, self.context)
+        self.assertEqual(summary.not_applicable_promotion_ids, (PromotionId("NOPE"),))
+        self.assertEqual(len(summary.applied_discounts), 1)
 
 
 if __name__ == '__main__':

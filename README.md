@@ -38,4 +38,4 @@ poetry build
 |--------|---------|
 | `promo_engine.domain` | `Money`, cart types, `PriceSummary`, `AppliedDiscount` |
 | `promo_engine.promotions` | `Promotion` ABC, `PercentOffSkusPromotion` |
-| `promo_engine.engine` | `PromotionEngine.price` |
+| `promo_engine.engine` | `PromotionEngine.price` (priority sort, stackable vs exclusive stop-rule, trace ids) |

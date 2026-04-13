@@ -181,3 +181,5 @@ class PriceSummary:
     discount_total: Money
     total: Money
     applied_discounts: list[AppliedDiscount]
+    not_applicable_promotion_ids: tuple[PromotionId, ...] = ()
+    skipped_due_to_combination_ids: tuple[PromotionId, ...] = ()

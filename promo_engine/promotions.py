@@ -20,8 +20,6 @@ from promo_engine.domain import (
 # TODO: Add time-based applicability (valid_from, valid_until)
 # TODO: Add day-of-week and time-of-day restrictions
 # TODO: Add customer segment targeting using context.customer_tags
-# TODO: Add promotion priority/ordering for application sequence
-# TODO: Add mutual exclusivity rules between promotions
 # TODO: Add maximum discount caps
 # TODO: Consider BuyXGetYPromotion for quantity-based discounts
 # TODO: Consider FixedAmountOffPromotion
@@ -36,6 +34,16 @@ class Promotion(ABC):
     def id(self) -> PromotionId:
         """Unique identifier for this promotion."""
         pass
+
+    @property
+    def priority(self) -> int:
+        """Higher values run first. Ties broken by promotion id string order."""
+        return 0
+
+    @property
+    def stackable(self) -> bool:
+        """If False, this promotion is exclusive: no lower-priority promotions run after it."""
+        return True
 
     @abstractmethod
     def is_applicable(self, cart: Cart, context: PricingContext) -> bool:
@@ -65,14 +73,27 @@ class PercentOffSkusPromotion(Promotion):
         promotion_id: PromotionId,
         percentage: Percentage,
         eligible_skus: frozenset[Sku],
+        *,
+        priority: int = 0,
+        stackable: bool = True,
     ) -> None:
         self._promotion_id = promotion_id
         self._percentage = percentage
         self._eligible_skus = eligible_skus
+        self._priority = priority
+        self._stackable = stackable
 
     @property
     def id(self) -> PromotionId:
         return self._promotion_id
+
+    @property
+    def priority(self) -> int:
+        return self._priority
+
+    @property
+    def stackable(self) -> bool:
+        return self._stackable
 
     def is_applicable(self, cart: Cart, context: PricingContext) -> bool:
         return any(

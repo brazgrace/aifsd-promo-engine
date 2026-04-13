@@ -37,9 +37,12 @@ For each promotion configuration `(promotion_id, percentage, eligible_skus)`:
 
 ## Multi-promotion behavior
 
-- Promotions are evaluated in **engine configuration order**.
-- Every promotion for which `is_applicable(cart, context)` is true is **applied**, and its `AppliedDiscount` list is **concatenated** to `applied_discounts`.
-- **Raw discount sum** = sum of `amount` over all `AppliedDiscount` entries (as `Money`).
+Each promotion exposes **`priority`** (int, default `0`) and **`stackable`** (bool, default `True`).
+
+- **Order**: Promotions are sorted by **`priority` descending**, then by **`id`** string (ascending) for a stable tie-break. The engine walks that order (not the raw list order).
+- **Combination**: **`stackable == True`**: discount is applied and processing continues. **`stackable == False`**: discount is applied, then **no further promotions** are considered (lower priority after sort are **skipped**).
+- **Tracing**: `PriceSummary.not_applicable_promotion_ids` lists promotions for which `is_applicable` was false. `PriceSummary.skipped_due_to_combination_ids` lists promotions not evaluated for discount because a prior **non-stackable** promotion already ran.
+- **Raw discount sum** = sum of `amount` over all `AppliedDiscount` entries actually produced (as `Money`).
 
 ## Checkout totals (authoritative)
 

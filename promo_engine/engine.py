@@ -3,13 +3,15 @@
 
 from decimal import Decimal
 
-from promo_engine.domain import Cart, PricingContext, PriceSummary, Money
+from promo_engine.domain import (
+    AppliedDiscount,
+    Cart,
+    Money,
+    PriceSummary,
+    PricingContext,
+    PromotionId,
+)
 from promo_engine.promotions import Promotion
-
-
-# TODO: Add promotion priority/ordering support
-# TODO: Add promotion combination rules (stackable vs exclusive)
-# TODO: Consider tracking which promotions were evaluated but not applicable
 
 
 class PromotionEngine:
@@ -30,11 +32,11 @@ class PromotionEngine:
 
         Algorithm:
         1. Calculate cart subtotal
-        2. Find all applicable promotions
-        3. Apply each promotion to get discounts
+        2. Sort promotions by priority (desc), then id
+        3. Walk in order: record not applicable; apply applicable; stop after a non-stackable
         4. Sum nominal discount amounts (raw total)
         5. Set discount_total = min(subtotal, raw); total = subtotal - discount_total
-        6. Return complete summary with explainability
+        6. Return summary with applied discounts, not-applicable ids, and skipped ids
 
         Args:
             cart: Shopping cart to price
@@ -45,12 +47,27 @@ class PromotionEngine:
         """
         subtotal = cart.subtotal()
 
-        all_discounts = []
+        ordered = sorted(
+            self.promotions,
+            key=lambda p: (-p.priority, p.id.value),
+        )
 
-        for promotion in self.promotions:
-            if promotion.is_applicable(cart, context):
-                discounts = promotion.apply(cart, context)
-                all_discounts.extend(discounts)
+        all_discounts: list[AppliedDiscount] = []
+        not_applicable: list[PromotionId] = []
+        skipped_combination: list[PromotionId] = []
+        stop_after_non_stackable = False
+
+        for promotion in ordered:
+            if stop_after_non_stackable:
+                skipped_combination.append(promotion.id)
+                continue
+            if not promotion.is_applicable(cart, context):
+                not_applicable.append(promotion.id)
+                continue
+            discounts = promotion.apply(cart, context)
+            all_discounts.extend(discounts)
+            if not promotion.stackable:
+                stop_after_non_stackable = True
 
         raw_discount_total = Money(Decimal('0'))
         if all_discounts:
@@ -68,5 +85,7 @@ class PromotionEngine:
             subtotal=subtotal,
             discount_total=discount_total,
             total=total,
-            applied_discounts=all_discounts
+            applied_discounts=all_discounts,
+            not_applicable_promotion_ids=tuple(not_applicable),
+            skipped_due_to_combination_ids=tuple(skipped_combination),
         )
