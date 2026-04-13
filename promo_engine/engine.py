@@ -76,9 +76,7 @@ class PromotionEngine:
                 Money(Decimal('0'))
             )
 
-        discount_total = (
-            subtotal if raw_discount_total > subtotal else raw_discount_total
-        )
+        discount_total = min(subtotal, raw_discount_total)
         total = subtotal - discount_total
 
         return PriceSummary(
