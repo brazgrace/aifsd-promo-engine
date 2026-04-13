@@ -36,6 +36,6 @@ poetry build
 
 | Module | Purpose |
 |--------|---------|
-| `promo_engine.domain` | `Money`, cart types, `PriceSummary`, `AppliedDiscount` |
+| `promo_engine.domain` | `Money`, cart types, `PriceSummary`, `AppliedDiscount`, `PromotionDecision`, `EvaluationTrace` |
 | `promo_engine.promotions` | `Promotion`, `PromotionConstraints`, `PercentOffSkusPromotion`, `FixedAmountOffPromotion`, `ThresholdPromotion`, `BuyXGetYPromotion`, `BuyXPayYPromotion` |
 | `promo_engine.engine` | `PromotionEngine.price` (`StackingPolicy`, priority sort, stackable stop in STACK mode, trace ids) |

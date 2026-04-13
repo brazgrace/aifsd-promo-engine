@@ -1,7 +1,7 @@
 # ABOUTME: Value types and core domain model for promotion engine
 # ABOUTME: Provides type-safe primitives and shopping cart structures
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from enum import StrEnum
@@ -184,6 +184,25 @@ class AppliedDiscount:
 
 
 @dataclass(frozen=True)
+class PromotionDecision:
+    """Outcome of evaluating one promotion in isolation (before stacking overrides)."""
+
+    applicable: bool
+    reason: str
+    computed_discount: Money | None = None
+
+
+@dataclass(frozen=True)
+class EvaluationTrace:
+    """Ordered explainability trail: one entry per configured promotion (engine sort order)."""
+
+    entries: tuple[tuple[PromotionId, PromotionDecision], ...] = ()
+
+    def decisions(self) -> tuple[PromotionDecision, ...]:
+        return tuple(d for _, d in self.entries)
+
+
+@dataclass
 class PriceSummary:
     """Complete pricing breakdown for a cart."""
     subtotal: Money
@@ -192,3 +211,6 @@ class PriceSummary:
     applied_discounts: list[AppliedDiscount]
     not_applicable_promotion_ids: tuple[PromotionId, ...] = ()
     skipped_due_to_combination_ids: tuple[PromotionId, ...] = ()
+    evaluation_trace: EvaluationTrace = field(
+        default_factory=lambda: EvaluationTrace(())
+    )

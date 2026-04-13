@@ -15,6 +15,7 @@ from promo_engine.domain import (
     Money,
     Percentage,
     PricingContext,
+    PromotionDecision,
     PromotionId,
     Sku,
 )
@@ -43,6 +44,39 @@ class PromotionConstraints:
     def __post_init__(self) -> None:
         if (self.daypart_start is None) ^ (self.daypart_end is None):
             raise ValueError("daypart_start and daypart_end must both be set or both omitted")
+
+    def skip_reason(self, context: PricingContext) -> str | None:
+        """
+        If ``allows`` would return False for a constraint reason, return a stable
+        ``Skipped: …`` message; otherwise ``None``.
+
+        Naive vs timezone-aware rules match ``allows`` (raises ``ValueError`` when mixed).
+        """
+        now = context.now
+        for bound in (b for b in (self.valid_from, self.valid_to) if b is not None):
+            if (bound.tzinfo is None) != (now.tzinfo is None):
+                raise ValueError(
+                    "PromotionConstraints: valid_from/valid_to and PricingContext.now "
+                    "must all be naive datetimes or all be timezone-aware."
+                )
+        if self.valid_from is not None and now < self.valid_from:
+            return "Skipped: outside validity window"
+        if self.valid_to is not None and now > self.valid_to:
+            return "Skipped: outside validity window"
+        if self.allowed_weekdays is not None and now.weekday() not in self.allowed_weekdays:
+            return "Skipped: outside allowed weekday"
+        if self.daypart_start is not None and self.daypart_end is not None:
+            t = now.time()
+            if self.daypart_start <= self.daypart_end:
+                if not (self.daypart_start <= t <= self.daypart_end):
+                    return "Skipped: outside allowed daypart"
+            else:
+                if not (t >= self.daypart_start or t <= self.daypart_end):
+                    return "Skipped: outside allowed daypart"
+        if self.required_customer_tags is not None and len(self.required_customer_tags) > 0:
+            if not self.required_customer_tags <= context.customer_tags:
+                return "Skipped: customer not eligible"
+        return None
 
     def allows(self, context: PricingContext) -> bool:
         now = context.now
@@ -109,6 +143,32 @@ class Promotion(ABC):
         Returns list of AppliedDiscount instances with full explainability.
         """
         pass
+
+    @abstractmethod
+    def evaluate(
+        self, cart: Cart, context: PricingContext
+    ) -> tuple[PromotionDecision, list[AppliedDiscount]]:
+        """
+        Evaluate this promotion for explainability and nominal discounts.
+
+        Returns a ``PromotionDecision`` (``reason`` uses ``Applied:`` / ``Skipped:``
+        prefixes) and the same discount lines ``apply`` would produce when applicable.
+        """
+        pass
+
+
+def _sum_discount_amounts(discounts: list[AppliedDiscount]) -> Money:
+    if not discounts:
+        return Money(Decimal("0"))
+    return sum((d.amount for d in discounts), Money(Decimal("0")))
+
+
+def _format_percentage_label(percentage: Percentage) -> str:
+    v = percentage.value.normalize()
+    if v == v.to_integral():
+        return str(int(v))
+    text = format(v, "f").rstrip("0").rstrip(".")
+    return text or "0"
 
 
 class PercentOffSkusPromotion(Promotion):
@@ -202,6 +262,37 @@ class PercentOffSkusPromotion(Promotion):
             )
         ]
 
+    def evaluate(
+        self, cart: Cart, context: PricingContext
+    ) -> tuple[PromotionDecision, list[AppliedDiscount]]:
+        skip = self._constraints.skip_reason(context)
+        if skip is not None:
+            return PromotionDecision(False, skip, None), []
+        if not any(
+            line.quantity.value > 0 and line.product.sku in self._eligible_skus
+            for line in cart.lines
+        ):
+            return (
+                PromotionDecision(False, "Skipped: no eligible cart lines", None),
+                [],
+            )
+        discounts = self.apply(cart, context)
+        if not discounts:
+            return PromotionDecision(False, "Skipped: zero discount", None), []
+        total = _sum_discount_amounts(discounts)
+        eligible = sorted(
+            {
+                str(line.product.sku)
+                for line in cart.lines
+                if line.quantity.value > 0 and line.product.sku in self._eligible_skus
+            },
+            key=lambda s: s,
+        )
+        sku_part = ", ".join(eligible)
+        pct = _format_percentage_label(self._percentage)
+        reason = f"Applied: {pct}% off {sku_part}"
+        return PromotionDecision(True, reason, total), discounts
+
 
 class FixedAmountOffPromotion(Promotion):
     """Fixed amount off the cart (nominal), optional minimum subtotal."""
@@ -258,6 +349,31 @@ class FixedAmountOffPromotion(Promotion):
             )
         ]
 
+    def evaluate(
+        self, cart: Cart, context: PricingContext
+    ) -> tuple[PromotionDecision, list[AppliedDiscount]]:
+        skip = self._constraints.skip_reason(context)
+        if skip is not None:
+            return PromotionDecision(False, skip, None), []
+        sub = cart.subtotal()
+        if sub <= Money(Decimal("0")):
+            return PromotionDecision(False, "Skipped: empty cart", None), []
+        if self._minimum_subtotal is not None and sub < self._minimum_subtotal:
+            return (
+                PromotionDecision(False, "Skipped: minimum subtotal not met", None),
+                [],
+            )
+        discounts = self.apply(cart, context)
+        total = _sum_discount_amounts(discounts)
+        return (
+            PromotionDecision(
+                True,
+                f"Applied: fixed {self._amount_off} off cart",
+                total,
+            ),
+            discounts,
+        )
+
 
 class ThresholdPromotion(Promotion):
     """When cart subtotal reaches ``threshold``, apply fixed ``reward`` (spend X, save Y)."""
@@ -310,6 +426,28 @@ class ThresholdPromotion(Promotion):
                 allocations=None,
             )
         ]
+
+    def evaluate(
+        self, cart: Cart, context: PricingContext
+    ) -> tuple[PromotionDecision, list[AppliedDiscount]]:
+        skip = self._constraints.skip_reason(context)
+        if skip is not None:
+            return PromotionDecision(False, skip, None), []
+        if cart.subtotal() < self._threshold:
+            return (
+                PromotionDecision(False, "Skipped: cart below spend threshold", None),
+                [],
+            )
+        discounts = self.apply(cart, context)
+        total = _sum_discount_amounts(discounts)
+        return (
+            PromotionDecision(
+                True,
+                f"Applied: spend {self._threshold.amount} save {self._reward.amount}",
+                total,
+            ),
+            discounts,
+        )
 
 
 class BuyXGetYPromotion(Promotion):
@@ -399,6 +537,28 @@ class BuyXGetYPromotion(Promotion):
                 allocations={self._target_sku: discount},
             )
         ]
+
+    def evaluate(
+        self, cart: Cart, context: PricingContext
+    ) -> tuple[PromotionDecision, list[AppliedDiscount]]:
+        skip = self._constraints.skip_reason(context)
+        if skip is not None:
+            return PromotionDecision(False, skip, None), []
+        if self._free_unit_count(cart) <= 0:
+            return (
+                PromotionDecision(False, "Skipped: bundle quantity not met", None),
+                [],
+            )
+        discounts = self.apply(cart, context)
+        total = _sum_discount_amounts(discounts)
+        return (
+            PromotionDecision(
+                True,
+                f"Applied: buy {self._buy_x} get {self._get_y} on {self._target_sku}",
+                total,
+            ),
+            discounts,
+        )
 
 
 class BuyXPayYPromotion(Promotion):
@@ -496,3 +656,28 @@ class BuyXPayYPromotion(Promotion):
                 allocations={self._target_sku: discount},
             )
         ]
+
+    def evaluate(
+        self, cart: Cart, context: PricingContext
+    ) -> tuple[PromotionDecision, list[AppliedDiscount]]:
+        skip = self._constraints.skip_reason(context)
+        if skip is not None:
+            return PromotionDecision(False, skip, None), []
+        if self._free_item_slots(cart) <= 0:
+            return (
+                PromotionDecision(False, "Skipped: buy-X quantity not met", None),
+                [],
+            )
+        discounts = self.apply(cart, context)
+        total = _sum_discount_amounts(discounts)
+        return (
+            PromotionDecision(
+                True,
+                (
+                    f"Applied: buy {self._buy_x} pay {self._pay_y} "
+                    f"on {self._target_sku}"
+                ),
+                total,
+            ),
+            discounts,
+        )

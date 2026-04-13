@@ -2,7 +2,7 @@
 # ABOUTME: Defines complete user-facing behavior for cart pricing with promotions
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from promo_engine.domain import (
@@ -13,6 +13,7 @@ from promo_engine.domain import (
     Percentage,
     PricingContext,
     Product,
+    PromotionDecision,
     PromotionId,
     Quantity,
     Sku,
@@ -23,6 +24,7 @@ from promo_engine.promotions import (
     BuyXPayYPromotion,
     PercentOffSkusPromotion,
     Promotion,
+    PromotionConstraints,
 )
 
 
@@ -62,6 +64,22 @@ class StubPromotion(Promotion):
 
     def apply(self, cart: Cart, context: PricingContext) -> list[AppliedDiscount]:
         return self._discounts
+
+    def evaluate(
+        self, cart: Cart, context: PricingContext
+    ) -> tuple[PromotionDecision, list[AppliedDiscount]]:
+        if not self._applicable:
+            return PromotionDecision(False, "Skipped: not applicable", None), []
+        discounts = list(self._discounts)
+        total = (
+            sum((d.amount for d in discounts), Money(Decimal("0")))
+            if discounts
+            else Money(Decimal("0"))
+        )
+        return (
+            PromotionDecision(True, "Applied: test promotion discount", total),
+            discounts,
+        )
 
 
 class TestPromotionEngine(unittest.TestCase):
@@ -427,6 +445,10 @@ class TestStackingPolicyCartAcceptance(unittest.TestCase):
         self.assertEqual(summary.subtotal, Money(Decimal("30.00")))
         self.assertEqual(summary.discount_total, Money(Decimal("13.00")))
         self.assertEqual(summary.total, Money(Decimal("17.00")))
+        self.assertEqual(len(summary.evaluation_trace.entries), 2)
+        reasons = [e[1].reason for e in summary.evaluation_trace.entries]
+        self.assertIn("Applied: 10% off SKU_A", reasons)
+        self.assertTrue(any("buy 3 pay 2" in r and "SKU_A" in r for r in reasons))
 
     def test_exclusive_best_keeps_only_three_for_two(self) -> None:
         engine = PromotionEngine(
@@ -441,6 +463,12 @@ class TestStackingPolicyCartAcceptance(unittest.TestCase):
             summary.skipped_due_to_combination_ids,
             (PromotionId("M-PCT"),),
         )
+        by_id = dict(summary.evaluation_trace.entries)
+        self.assertEqual(
+            by_id[PromotionId("M-PCT")].reason,
+            "Skipped: exclusive promotion policy",
+        )
+        self.assertTrue(by_id[PromotionId("Z-3F2")].applicable)
 
     def test_exclusive_priority_first_promo_wins(self) -> None:
         """M-PCT sorts before Z-3F2; first with a discount wins (10% only)."""
@@ -454,6 +482,101 @@ class TestStackingPolicyCartAcceptance(unittest.TestCase):
             summary.skipped_due_to_combination_ids,
             (PromotionId("Z-3F2"),),
         )
+
+
+class TestEvaluationTraceExplainability(unittest.TestCase):
+    """PromotionDecision / EvaluationTrace acceptance-style reasons."""
+
+    def test_skipped_outside_validity_window(self) -> None:
+        now = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        ctx = PricingContext(
+            now=now,
+            channel="online",
+            customer_id="c1",
+            customer_tags=set(),
+        )
+        promo = PercentOffSkusPromotion(
+            PromotionId("WIN"),
+            Percentage(Decimal("10")),
+            frozenset({Sku("SKU-A")}),
+            constraints=PromotionConstraints(
+                valid_from=now - timedelta(days=30),
+                valid_to=now - timedelta(days=1),
+            ),
+        )
+        cart = Cart(
+            [
+                LineItem(
+                    Product(Sku("SKU-A"), "A", "x"),
+                    Quantity(1),
+                    Money(Decimal("20.00")),
+                )
+            ]
+        )
+        summary = PromotionEngine([promo]).price(cart, ctx)
+        self.assertEqual(summary.not_applicable_promotion_ids, (PromotionId("WIN"),))
+        entry = summary.evaluation_trace.entries[0]
+        self.assertEqual(entry[0], PromotionId("WIN"))
+        self.assertFalse(entry[1].applicable)
+        self.assertEqual(entry[1].reason, "Skipped: outside validity window")
+        self.assertIsNone(entry[1].computed_discount)
+
+    def test_skipped_customer_not_eligible(self) -> None:
+        now = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        ctx = PricingContext(
+            now=now,
+            channel="online",
+            customer_id="c1",
+            customer_tags={"silver"},
+        )
+        promo = PercentOffSkusPromotion(
+            PromotionId("GOLD15"),
+            Percentage(Decimal("15")),
+            frozenset({Sku("SKU-A")}),
+            constraints=PromotionConstraints(
+                required_customer_tags=frozenset({"gold"}),
+            ),
+        )
+        cart = Cart(
+            [
+                LineItem(
+                    Product(Sku("SKU-A"), "A", "x"),
+                    Quantity(1),
+                    Money(Decimal("20.00")),
+                )
+            ]
+        )
+        summary = PromotionEngine([promo]).price(cart, ctx)
+        entry = summary.evaluation_trace.entries[0]
+        self.assertEqual(entry[1].reason, "Skipped: customer not eligible")
+
+    def test_applied_percent_off_sku_reason_and_discount(self) -> None:
+        now = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        ctx = PricingContext(
+            now=now,
+            channel="online",
+            customer_id="c1",
+            customer_tags=set(),
+        )
+        promo = PercentOffSkusPromotion(
+            PromotionId("P10"),
+            Percentage(Decimal("10")),
+            frozenset({Sku("SKU-A")}),
+        )
+        cart = Cart(
+            [
+                LineItem(
+                    Product(Sku("SKU-A"), "A", "x"),
+                    Quantity(1),
+                    Money(Decimal("20.00")),
+                )
+            ]
+        )
+        summary = PromotionEngine([promo]).price(cart, ctx)
+        entry = summary.evaluation_trace.entries[0]
+        self.assertTrue(entry[1].applicable)
+        self.assertEqual(entry[1].reason, "Applied: 10% off SKU-A")
+        self.assertEqual(entry[1].computed_discount, Money(Decimal("2.00")))
 
 
 if __name__ == '__main__':

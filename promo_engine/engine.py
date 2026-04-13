@@ -6,9 +6,11 @@ from decimal import Decimal
 from promo_engine.domain import (
     AppliedDiscount,
     Cart,
+    EvaluationTrace,
     Money,
     PriceSummary,
     PricingContext,
+    PromotionDecision,
     PromotionId,
     StackingPolicy,
 )
@@ -45,44 +47,87 @@ class PromotionEngine:
 
     def _walk_stack_mode(
         self, cart: Cart, context: PricingContext
-    ) -> tuple[list[AppliedDiscount], list[PromotionId], list[PromotionId]]:
+    ) -> tuple[list[AppliedDiscount], list[PromotionId], list[PromotionId], EvaluationTrace]:
         """Priority walk with per-promotion non-stackable early stop (legacy STACK)."""
         ordered = self._ordered(self.promotions)
         all_discounts: list[AppliedDiscount] = []
         not_applicable: list[PromotionId] = []
         skipped: list[PromotionId] = []
+        trace_parts: list[tuple[PromotionId, PromotionDecision]] = []
         stop_after_non_stackable = False
 
         for promotion in ordered:
             if stop_after_non_stackable:
-                if promotion.is_applicable(cart, context):
+                decision, _ = promotion.evaluate(cart, context)
+                if decision.applicable:
                     skipped.append(promotion.id)
+                    trace_parts.append(
+                        (
+                            promotion.id,
+                            PromotionDecision(
+                                applicable=False,
+                                reason="Skipped: excluded after non-stackable promotion",
+                                computed_discount=decision.computed_discount,
+                            ),
+                        )
+                    )
+                else:
+                    trace_parts.append((promotion.id, decision))
                 continue
-            if not promotion.is_applicable(cart, context):
+            decision, discounts = promotion.evaluate(cart, context)
+            if not decision.applicable:
                 not_applicable.append(promotion.id)
+                trace_parts.append((promotion.id, decision))
                 continue
-            discounts = promotion.apply(cart, context)
             all_discounts.extend(discounts)
+            trace_parts.append((promotion.id, decision))
             if not promotion.stackable:
                 stop_after_non_stackable = True
 
-        return all_discounts, not_applicable, skipped
+        return all_discounts, not_applicable, skipped, EvaluationTrace(tuple(trace_parts))
 
-    def _collect_all_applicable(
-        self, cart: Cart, context: PricingContext
-    ) -> tuple[list[tuple[Promotion, list[AppliedDiscount]]], list[PromotionId]]:
-        """Every applicable promotion is evaluated (no stackable early stop)."""
-        ordered = self._ordered(self.promotions)
-        candidates: list[tuple[Promotion, list[AppliedDiscount]]] = []
+    @staticmethod
+    def _exclusive_eval_rows(
+        promotions: list[Promotion],
+        cart: Cart,
+        context: PricingContext,
+    ) -> tuple[
+        list[tuple[Promotion, PromotionDecision, list[AppliedDiscount]]],
+        list[PromotionId],
+    ]:
+        """Every promotion evaluated in sort order (for exclusive resolution + trace)."""
+        ordered = PromotionEngine._ordered(promotions)
+        rows: list[tuple[Promotion, PromotionDecision, list[AppliedDiscount]]] = []
         not_applicable: list[PromotionId] = []
-
         for promotion in ordered:
-            if not promotion.is_applicable(cart, context):
+            decision, discounts = promotion.evaluate(cart, context)
+            rows.append((promotion, decision, discounts))
+            if not decision.applicable:
                 not_applicable.append(promotion.id)
-                continue
-            candidates.append((promotion, promotion.apply(cart, context)))
+        return rows, not_applicable
 
-        return candidates, not_applicable
+    @staticmethod
+    def _finalize_exclusive_trace(
+        rows: list[tuple[Promotion, PromotionDecision, list[AppliedDiscount]]],
+        skipped_combination: list[PromotionId],
+    ) -> EvaluationTrace:
+        skipped_set = set(skipped_combination)
+        parts: list[tuple[PromotionId, PromotionDecision]] = []
+        for promo, decision, _ in rows:
+            if decision.applicable and promo.id in skipped_set:
+                parts.append(
+                    (
+                        promo.id,
+                        PromotionDecision(
+                            applicable=False,
+                            reason="Skipped: exclusive promotion policy",
+                            computed_discount=decision.computed_discount,
+                        ),
+                    )
+                )
+            else:
+                parts.append((promo.id, decision))
+        return EvaluationTrace(tuple(parts))
 
     @staticmethod
     def _resolve_exclusive_best(
@@ -164,11 +209,14 @@ class PromotionEngine:
         subtotal = cart.subtotal()
 
         if self.stacking_policy == StackingPolicy.STACK:
-            all_discounts, not_applicable, skipped_combination = self._walk_stack_mode(
-                cart, context
+            all_discounts, not_applicable, skipped_combination, evaluation_trace = (
+                self._walk_stack_mode(cart, context)
             )
         else:
-            candidates, not_applicable = self._collect_all_applicable(cart, context)
+            rows, not_applicable = PromotionEngine._exclusive_eval_rows(
+                self.promotions, cart, context
+            )
+            candidates = [(p, discs) for p, d, discs in rows if d.applicable]
             if self.stacking_policy == StackingPolicy.EXCLUSIVE_BEST_FOR_CUSTOMER:
                 all_discounts, skipped_combination = self._resolve_exclusive_best(
                     candidates
@@ -179,6 +227,9 @@ class PromotionEngine:
                 )
             else:
                 raise ValueError(f"Unknown stacking policy: {self.stacking_policy!r}")
+            evaluation_trace = PromotionEngine._finalize_exclusive_trace(
+                rows, skipped_combination
+            )
 
         raw_discount_total = Money(Decimal("0"))
         if all_discounts:
@@ -197,4 +248,5 @@ class PromotionEngine:
             applied_discounts=all_discounts,
             not_applicable_promotion_ids=tuple(not_applicable),
             skipped_due_to_combination_ids=tuple(skipped_combination),
+            evaluation_trace=evaluation_trace,
         )
