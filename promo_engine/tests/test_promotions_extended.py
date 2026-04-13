@@ -144,6 +144,61 @@ class TestPromotionConstraints(unittest.TestCase):
         self.assertTrue(c.allows(ctx(tags={"vip", "de", "other"})))
         self.assertFalse(c.allows(ctx(tags={"vip"})))
 
+    def test_gold_segment_tags_include_gold_allows(self) -> None:
+        c = PromotionConstraints(required_customer_tags=frozenset({"gold"}))
+        self.assertTrue(c.allows(ctx(tags={"gold", "newsletter"})))
+
+    def test_gold_segment_tags_exclude_gold_denies(self) -> None:
+        c = PromotionConstraints(required_customer_tags=frozenset({"gold"}))
+        self.assertFalse(c.allows(ctx(tags={"silver"})))
+
+
+class TestCustomerSegmentationGoldEngine(unittest.TestCase):
+    """Gold segment promos use PricingContext.customer_tags."""
+
+    def test_gold_promo_applies_when_context_includes_gold(self) -> None:
+        product = Product(Sku("SKU_A"), "A", "c")
+        cart = Cart([LineItem(product, Quantity(1), Money(Decimal("10.00")))])
+        promo = PercentOffSkusPromotion(
+            PromotionId("GOLD15"),
+            Percentage(Decimal("15")),
+            frozenset({Sku("SKU_A")}),
+            constraints=PromotionConstraints(
+                required_customer_tags=frozenset({"gold"}),
+            ),
+        )
+        engine = PromotionEngine([promo])
+        gold_ctx = PricingContext(
+            datetime(2024, 6, 3, 12, 0, tzinfo=UTC),
+            "online",
+            "c1",
+            {"gold"},
+        )
+        summary = engine.price(cart, gold_ctx)
+        self.assertEqual(summary.discount_total, Money(Decimal("1.50")))
+
+    def test_gold_promo_not_applied_without_gold_tag(self) -> None:
+        product = Product(Sku("SKU_A"), "A", "c")
+        cart = Cart([LineItem(product, Quantity(1), Money(Decimal("10.00")))])
+        promo = PercentOffSkusPromotion(
+            PromotionId("GOLD15"),
+            Percentage(Decimal("15")),
+            frozenset({Sku("SKU_A")}),
+            constraints=PromotionConstraints(
+                required_customer_tags=frozenset({"gold"}),
+            ),
+        )
+        engine = PromotionEngine([promo])
+        silver_ctx = PricingContext(
+            datetime(2024, 6, 3, 12, 0, tzinfo=UTC),
+            "online",
+            "c1",
+            {"silver"},
+        )
+        summary = engine.price(cart, silver_ctx)
+        self.assertEqual(summary.discount_total, Money(Decimal("0.00")))
+        self.assertEqual(summary.not_applicable_promotion_ids, (PromotionId("GOLD15"),))
+
 
 class TestPercentOffMaxDiscount(unittest.TestCase):
     def test_max_discount_caps_amount_and_allocations(self) -> None:

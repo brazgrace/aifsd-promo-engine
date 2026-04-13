@@ -4,7 +4,7 @@ This document is normative for the Python package in this directory (`promo_engi
 
 ## Scope
 
-- **In scope**: `PromotionEngine` orchestration and `StackingPolicy`; `PromotionConstraints` (time window, weekday, daypart, customer tags); `PercentOffSkusPromotion` (percentage off SKUs, optional `max_discount`); `FixedAmountOffPromotion`; `ThresholdPromotion` (spend threshold, fixed reward); `BuyXGetYPromotion` (bundle free units at cheapest unit prices); `BuyXPayYPromotion` (buy X pay Y / e.g. 3-for-2); `Money` / cart math; `PriceSummary` and `AppliedDiscount` explainability.
+- **In scope**: `PromotionEngine` orchestration and `StackingPolicy`; `PromotionConstraints` (time window, weekday, daypart, **customer segment tags**); `PercentOffSkusPromotion` (percentage off SKUs, optional `max_discount`); `FixedAmountOffPromotion`; `ThresholdPromotion` (spend threshold, fixed reward); `BuyXGetYPromotion` (bundle free units at cheapest unit prices); `BuyXPayYPromotion` (buy X pay Y / e.g. 3-for-2); `Money` / cart math; `PriceSummary` and `AppliedDiscount` explainability.
 - **Not covered here**: `PricingContext.channel` targeting (field exists for future use).
 
 ## Types (glossary)
@@ -27,7 +27,15 @@ Optional filters (all unset ⇒ no restriction):
 - **`valid_from` / `valid_to`**: when set, `PricingContext.now` must satisfy `valid_from <= now <= valid_to` (inclusive at both ends: rejected only if `now < valid_from` or `now > valid_to`). Choose **`valid_to` as the last included instant** (for example end-of-day on the last calendar day) so “Feb 1” is outside a January-only promo. **`valid_from` / `valid_to` and `now` must all be timezone-aware or all naive**; mixing raises `ValueError` in `PromotionConstraints.allows`.
 - **`allowed_weekdays`**: if set, `now.weekday()` must be in the set (`datetime` convention: Monday = 0 … Sunday = 6).
 - **`daypart_start` / `daypart_end`**: both required if either is set; `now.time()` must fall in that inclusive range on the clock (supports overnight windows when start > end).
-- **`required_customer_tags`**: if non-empty, must be a **subset** of `context.customer_tags`.
+- **`required_customer_tags`**: if non-empty, must be a **subset** of `context.customer_tags` (every listed tag must be present on the context — **AND** semantics). Tags are arbitrary strings (e.g. `"gold"`, `"vip"`).
+
+## Customer segmentation
+
+Promotions target segments by passing **`PromotionConstraints(..., required_customer_tags=frozenset({...}))`** into any promotion type that accepts **`constraints`**. **`PricingContext.customer_tags`** is a `set[str]`; the promo is allowed only if **each** required tag is in that set.
+
+Examples:
+
+- Promo for **gold** customers: `required_customer_tags=frozenset({"gold"})`. If `customer_tags` is `{"gold", "email-opt-in"}` → **applies**. If `customer_tags` is `{"silver"}` → **does not apply** (no discount; id may appear in `not_applicable_promotion_ids` when priced through the engine).
 
 ## Discount: percent off selected SKUs
 

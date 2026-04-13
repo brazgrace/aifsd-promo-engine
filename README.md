@@ -1,6 +1,6 @@
 # Promotion engine (Python kata)
 
-Small library for pricing a shopping cart with promotions: **percentage off SKUs** (with optional caps and context constraints), **fixed and threshold cart discounts**, **buy-X-get-Y** bundles, per-line `Money` rounding (half-up, two decimals), multi-promotion ordering and stack rules, and checkout totals when nominal discounts exceed the cart subtotal.
+Small library for pricing a shopping cart with promotions: **percentage off SKUs** (with optional caps and context constraints), **customer segment tags** on `PricingContext`, **fixed and threshold cart discounts**, **buy-X-get-Y** bundles, per-line `Money` rounding (half-up, two decimals), multi-promotion ordering and stack rules, and checkout totals when nominal discounts exceed the cart subtotal.
 
 Normative behavior is described in [spec.md](spec.md). Implementation prompts and checklist live in [plan.md](plan.md).
 
