@@ -1,7 +1,7 @@
 # ABOUTME: Constraints, caps, and additional promotion types
 
 import unittest
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 
 from promo_engine.domain import (
@@ -48,16 +48,65 @@ class TestPromotionConstraints(unittest.TestCase):
         with self.assertRaises(ValueError):
             PromotionConstraints(daypart_start=time(9, 0), daypart_end=None)
 
-    def test_valid_from_until_window(self) -> None:
+    def test_valid_from_to_window(self) -> None:
         c = PromotionConstraints(
             valid_from=datetime(2024, 6, 1, 0, 0, tzinfo=UTC),
-            valid_until=datetime(2024, 6, 30, 23, 59, 59, tzinfo=UTC),
+            valid_to=datetime(2024, 6, 30, 23, 59, 59, tzinfo=UTC),
         )
         mid = datetime(2024, 6, 15, 12, 0, tzinfo=UTC)
         self.assertTrue(c.allows(PricingContext(mid, "o", "c", set())))
         self.assertFalse(
             c.allows(PricingContext(datetime(2024, 5, 1, 12, 0, tzinfo=UTC), "o", "c", set()))
         )
+
+    def test_january_promo_jan10_applies_feb1_does_not(self) -> None:
+        """Acceptance: promo Jan 1–Jan 31; Jan 10 in window, Feb 1 out."""
+        c = PromotionConstraints(
+            valid_from=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+            valid_to=datetime(2026, 1, 31, 23, 59, 59, tzinfo=UTC),
+        )
+        self.assertTrue(
+            c.allows(PricingContext(datetime(2026, 1, 10, 12, 0, tzinfo=UTC), "o", "c", set()))
+        )
+        self.assertFalse(
+            c.allows(PricingContext(datetime(2026, 2, 1, 0, 0, 0, tzinfo=UTC), "o", "c", set()))
+        )
+
+    def test_window_inclusive_at_valid_from_and_valid_to(self) -> None:
+        vf = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+        vt = datetime(2026, 1, 31, 23, 59, 59, tzinfo=UTC)
+        c = PromotionConstraints(valid_from=vf, valid_to=vt)
+        self.assertTrue(c.allows(PricingContext(vf, "o", "c", set())))
+        self.assertTrue(c.allows(PricingContext(vt, "o", "c", set())))
+
+    def test_window_rejects_immediately_after_valid_to(self) -> None:
+        vt = datetime(2026, 1, 31, 12, 0, 0, tzinfo=UTC)
+        c = PromotionConstraints(
+            valid_from=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+            valid_to=vt,
+        )
+        self.assertFalse(
+            c.allows(PricingContext(vt + timedelta(seconds=1), "o", "c", set()))
+        )
+
+    def test_window_rejects_immediately_before_valid_from(self) -> None:
+        vf = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
+        c = PromotionConstraints(
+            valid_from=vf,
+            valid_to=datetime(2026, 1, 31, 0, 0, 0, tzinfo=UTC),
+        )
+        self.assertFalse(
+            c.allows(PricingContext(vf - timedelta(seconds=1), "o", "c", set()))
+        )
+
+    def test_mixed_naive_context_and_aware_bounds_raises(self) -> None:
+        c = PromotionConstraints(
+            valid_from=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+            valid_to=datetime(2026, 1, 31, 0, 0, 0, tzinfo=UTC),
+        )
+        naive_now = datetime(2026, 1, 10, 12, 0, 0)
+        with self.assertRaises(ValueError):
+            c.allows(PricingContext(naive_now, "o", "c", set()))
 
     def test_allowed_weekdays(self) -> None:
         # 2024-06-03 is Monday (0)
@@ -189,6 +238,30 @@ class TestConstraintsWithPercentOff(unittest.TestCase):
         )
         self.assertFalse(promo.is_applicable(cart, ctx(tags=set())))
         self.assertTrue(promo.is_applicable(cart, ctx(tags={"vip"})))
+
+
+class TestDateWindowEngineIntegration(unittest.TestCase):
+    def test_percent_off_engine_respects_january_date_window(self) -> None:
+        product = Product(Sku("SKU_A"), "A", "c")
+        cart = Cart([LineItem(product, Quantity(1), Money(Decimal("10.00")))])
+        promo = PercentOffSkusPromotion(
+            PromotionId("JAN10"),
+            Percentage(Decimal("10")),
+            frozenset({Sku("SKU_A")}),
+            constraints=PromotionConstraints(
+                valid_from=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+                valid_to=datetime(2026, 1, 31, 23, 59, 59, tzinfo=UTC),
+            ),
+        )
+        engine = PromotionEngine([promo])
+        jan_ctx = PricingContext(
+            datetime(2026, 1, 10, 12, 0, tzinfo=UTC), "online", "C1", set()
+        )
+        feb_ctx = PricingContext(
+            datetime(2026, 2, 1, 12, 0, tzinfo=UTC), "online", "C1", set()
+        )
+        self.assertEqual(engine.price(cart, jan_ctx).discount_total, Money(Decimal("1.00")))
+        self.assertEqual(engine.price(cart, feb_ctx).discount_total, Money(Decimal("0.00")))
 
 
 if __name__ == "__main__":

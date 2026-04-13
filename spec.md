@@ -24,7 +24,7 @@ For each line, **line subtotal** = `unit_price × quantity` as `Money`.
 
 Optional filters (all unset ⇒ no restriction):
 
-- **`valid_from` / `valid_until`**: `context.now` must satisfy `valid_from <= now <= valid_until` when each bound is set (inclusive window).
+- **`valid_from` / `valid_to`**: when set, `PricingContext.now` must satisfy `valid_from <= now <= valid_to` (inclusive at both ends: rejected only if `now < valid_from` or `now > valid_to`). Choose **`valid_to` as the last included instant** (for example end-of-day on the last calendar day) so “Feb 1” is outside a January-only promo. **`valid_from` / `valid_to` and `now` must all be timezone-aware or all naive**; mixing raises `ValueError` in `PromotionConstraints.allows`.
 - **`allowed_weekdays`**: if set, `now.weekday()` must be in the set (`datetime` convention: Monday = 0 … Sunday = 6).
 - **`daypart_start` / `daypart_end`**: both required if either is set; `now.time()` must fall in that inclusive range on the clock (supports overnight windows when start > end).
 - **`required_customer_tags`**: if non-empty, must be a **subset** of `context.customer_tags`.

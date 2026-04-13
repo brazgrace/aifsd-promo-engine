@@ -24,12 +24,16 @@ class PromotionConstraints:
     """
     Optional filters on pricing context.
 
+    ``valid_from`` / ``valid_to`` bound ``PricingContext.now`` (inclusive ends if
+    ``valid_to`` is the last instant inside the promo). Bounds and ``now`` must
+    all be naive or all timezone-aware.
+
     Weekdays use ``datetime.weekday()`` convention: Monday = 0, Sunday = 6.
     Daypart uses ``context.now.time()`` in the same timezone awareness as ``now``.
     """
 
     valid_from: datetime | None = None
-    valid_until: datetime | None = None
+    valid_to: datetime | None = None
     allowed_weekdays: frozenset[int] | None = None
     daypart_start: time | None = None
     daypart_end: time | None = None
@@ -41,9 +45,15 @@ class PromotionConstraints:
 
     def allows(self, context: PricingContext) -> bool:
         now = context.now
+        for bound in (b for b in (self.valid_from, self.valid_to) if b is not None):
+            if (bound.tzinfo is None) != (now.tzinfo is None):
+                raise ValueError(
+                    "PromotionConstraints: valid_from/valid_to and PricingContext.now "
+                    "must all be naive datetimes or all be timezone-aware."
+                )
         if self.valid_from is not None and now < self.valid_from:
             return False
-        if self.valid_until is not None and now > self.valid_until:
+        if self.valid_to is not None and now > self.valid_to:
             return False
         if self.allowed_weekdays is not None and now.weekday() not in self.allowed_weekdays:
             return False
