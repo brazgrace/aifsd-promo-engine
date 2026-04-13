@@ -4,14 +4,14 @@ This document is normative for the Python package in this directory (`promo_engi
 
 ## Scope
 
-- **In scope**: `PromotionEngine` orchestration, `PercentOffSkusPromotion` (percentage off a configured set of SKUs), `Money` / cart line math, `PriceSummary` checkout totals, `AppliedDiscount` explainability.
-- **Out of scope (v1)**: Time windows, channel or customer targeting, promotion exclusivity, priority beyond list order, caps inside a single promotion beyond `Money` quantization.
+- **In scope**: `PromotionEngine` orchestration; `PromotionConstraints` (time window, weekday, daypart, customer tags); `PercentOffSkusPromotion` (percentage off SKUs, optional `max_discount`); `FixedAmountOffPromotion`; `ThresholdPromotion` (spend threshold, fixed reward); `BuyXGetYPromotion` (bundle free units at cheapest unit prices); `Money` / cart math; `PriceSummary` and `AppliedDiscount` explainability.
+- **Not covered here**: `PricingContext.channel` targeting (field exists for future use).
 
 ## Types (glossary)
 
 - **Money**: Decimal amount quantized to **two decimal places** using **ROUND_HALF_UP** on construction and on results of `Money` arithmetic that returns `Money`. `str(Money(...))` uses a **€** prefix and two fractional digits for this kata (presentation only).
 - **Cart**: List of **line items**; each line has `product` (with `sku`), `quantity` (non-negative integer), and `unit_price` (`Money`).
-- **PricingContext**: Passed into `PromotionEngine.price`; the baseline percent-off-SKUs promotion **does not read** it (reserved for future promotions).
+- **PricingContext**: Passed into `PromotionEngine.price`. Promotions may read **`now`** and **`customer_tags`** via optional `PromotionConstraints`; other fields are reserved for future rules.
 - **AppliedDiscount**: One applied instance from a promotion: `promotion_id`, `amount` (`Money`, nominal for that promotion), `target` (`"line"` for this baseline), `details` (human-readable), optional `allocations` (`Sku` → `Money`, nominal per SKU, aggregated across lines).
 
 ## Subtotal
@@ -20,20 +20,44 @@ For each line, **line subtotal** = `unit_price × quantity` as `Money`.
 
 **Cart subtotal** = sum of line subtotals (`Money`).
 
+## PromotionConstraints
+
+Optional filters (all unset ⇒ no restriction):
+
+- **`valid_from` / `valid_until`**: `context.now` must satisfy `valid_from <= now <= valid_until` when each bound is set (inclusive window).
+- **`allowed_weekdays`**: if set, `now.weekday()` must be in the set (`datetime` convention: Monday = 0 … Sunday = 6).
+- **`daypart_start` / `daypart_end`**: both required if either is set; `now.time()` must fall in that inclusive range on the clock (supports overnight windows when start > end).
+- **`required_customer_tags`**: if non-empty, must be a **subset** of `context.customer_tags`.
+
 ## Discount: percent off selected SKUs
 
-For each promotion configuration `(promotion_id, percentage, eligible_skus)`:
+For each promotion configuration `(promotion_id, percentage, eligible_skus)` plus optional **`constraints`**, **`max_discount`**:
 
-1. A line is **eligible** if `quantity > 0` and `line.product.sku` is in `eligible_skus`.
-2. For each eligible line, **line discount** = `unit_price × (quantity × percentage_as_decimal)` as `Money` (half-up at each `Money` result).
-3. **Allocations**: Discounts from all lines with the same SKU are **aggregated** into a single `Money` per `Sku` for that promotion’s `AppliedDiscount`.
-4. If there are no eligible lines, the promotion is not applicable (no `AppliedDiscount` from it).
+1. **Applicability**: `constraints.allows(context)` and at least one cart line eligible by SKU/quantity as below.
+2. A line is **eligible** if `quantity > 0` and `line.product.sku` is in `eligible_skus`.
+3. For each eligible line, **line discount** = `unit_price × (quantity × percentage_as_decimal)` as `Money` (half-up at each `Money` result).
+4. **Allocations**: Discounts from all lines with the same SKU are **aggregated** into a single `Money` per `Sku`.
+5. If **`max_discount`** is set and the raw sum exceeds it, **amount and per-SKU allocations** are scaled proportionally to that cap (with half-up `Money` quantization and a small drift correction so totals match).
+
+If there are no eligible lines, the promotion is not applicable (no `AppliedDiscount` from it).
 
 **Explainability** for this promotion must be recoverable from:
 
 - `promotion_id`, and
 - `details` (must convey **percentage** and **affected SKUs** in human-readable form), and
 - `allocations` (per-SKU nominal amounts).
+
+## Fixed amount off cart
+
+`FixedAmountOffPromotion`: if `constraints` pass, cart subtotal `> 0`, and subtotal `>= minimum_subtotal` when that minimum is set, apply a single cart-level `AppliedDiscount` with `target="cart"` and fixed `amount_off`.
+
+## Threshold (spend X, save Y)
+
+`ThresholdPromotion`: if `constraints` pass and cart subtotal `>= threshold`, apply fixed `reward` as one cart-level `AppliedDiscount` (`target="cart"`).
+
+## Buy X get Y (same SKU)
+
+`BuyXGetYPromotion`: parameters `buy_x` and `get_y` (both ≥ 1). For `target_sku`, total quantity across lines determines how many full bundles of size `buy_x + get_y` exist. For each bundle, **`get_y`** units are treated as free; discount value is the sum of the **cheapest** free unit prices (expanded per quantity, sorted by `Money`, multi-line safe).
 
 ## Multi-promotion behavior
 
@@ -87,7 +111,7 @@ Explainability includes promotion id, **10%**, and **SKU_A** (and must not attri
 This spec matches the intended behavior of:
 
 - `promo_engine.domain` (`Money`, `Cart`, `LineItem`, `PriceSummary`, `AppliedDiscount`, …)
-- `promo_engine.promotions.PercentOffSkusPromotion`
+- `promo_engine.promotions` (`PromotionConstraints`, `PercentOffSkusPromotion`, `FixedAmountOffPromotion`, `ThresholdPromotion`, `BuyXGetYPromotion`)
 - `promo_engine.engine.PromotionEngine`
 
 `PromotionEngine.price` implements checkout totals exactly as in **Checkout totals (authoritative)**: it sums nominal `AppliedDiscount.amount` values, then sets `discount_total` to the lesser of that sum and `subtotal`, and `total = subtotal - discount_total`.
