@@ -120,7 +120,14 @@ Where the implementation differs from this document, either the code or this spe
 
 ## Running tests
 
-From this directory (`promotion-engine-kata/python`):
+From this directory (`promotion-engine-kata/python`). Pytest is wired via **`[tool.pytest.ini_options]`** in [`pyproject.toml`](pyproject.toml) (`testpaths`, `pythonpath`); there is no separate `pytest.ini`, so nothing duplicates a second on-disk config.
 
-- **unittest**: `python -m unittest discover -s promo_engine/tests -p 'test_*.py' -v`
-- **pytest** (requires the dev dependency): `pytest`
+Install dev tools (includes pytest) once:
+
+- `poetry install --with dev`
+
+Then either:
+
+- **unittest** (stdlib only): `python -m unittest discover -s promo_engine/tests -p 'test_*.py' -v`  
+  or with Poetry: `poetry run python -m unittest discover -s promo_engine/tests -p 'test_*.py' -v`
+- **pytest**: `poetry run pytest` (or `pytest` if your environment already has pytest on `PATH`)
