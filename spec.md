@@ -1,0 +1,90 @@
+# Promotion engine — baseline specification
+
+This document is normative for the Python package in this directory (`promo_engine`). It describes the baseline pricing engine: cart subtotals, percentage discounts on selected SKUs, multi-promotion application, money rounding, and explainability.
+
+## Scope
+
+- **In scope**: `PromotionEngine` orchestration, `PercentOffSkusPromotion` (percentage off a configured set of SKUs), `Money` / cart line math, `PriceSummary` checkout totals, `AppliedDiscount` explainability.
+- **Out of scope (v1)**: Time windows, channel or customer targeting, promotion exclusivity, priority beyond list order, caps inside a single promotion beyond `Money` quantization.
+
+## Types (glossary)
+
+- **Money**: Decimal amount quantized to **two decimal places** using **ROUND_HALF_UP** on construction and on results of `Money` arithmetic that returns `Money`.
+- **Cart**: List of **line items**; each line has `product` (with `sku`), `quantity` (non-negative integer), and `unit_price` (`Money`).
+- **PricingContext**: Passed into `PromotionEngine.price`; the baseline percent-off-SKUs promotion **does not read** it (reserved for future promotions).
+- **AppliedDiscount**: One applied instance from a promotion: `promotion_id`, `amount` (`Money`, nominal for that promotion), `target` (`"line"` for this baseline), `details` (human-readable), optional `allocations` (`Sku` → `Money`, nominal per SKU, aggregated across lines).
+
+## Subtotal
+
+For each line, **line subtotal** = `unit_price × quantity` as `Money`.
+
+**Cart subtotal** = sum of line subtotals (`Money`).
+
+## Discount: percent off selected SKUs
+
+For each promotion configuration `(promotion_id, percentage, eligible_skus)`:
+
+1. A line is **eligible** if `quantity > 0` and `line.product.sku` is in `eligible_skus`.
+2. For each eligible line, **line discount** = `unit_price × (quantity × percentage_as_decimal)` as `Money` (half-up at each `Money` result).
+3. **Allocations**: Discounts from all lines with the same SKU are **aggregated** into a single `Money` per `Sku` for that promotion’s `AppliedDiscount`.
+4. If there are no eligible lines, the promotion is not applicable (no `AppliedDiscount` from it).
+
+**Explainability** for this promotion must be recoverable from:
+
+- `promotion_id`, and
+- `details` (must convey **percentage** and **affected SKUs** in human-readable form), and
+- `allocations` (per-SKU nominal amounts).
+
+## Multi-promotion behavior
+
+- Promotions are evaluated in **engine configuration order**.
+- Every promotion for which `is_applicable(cart, context)` is true is **applied**, and its `AppliedDiscount` list is **concatenated** to `applied_discounts`.
+- **Raw discount sum** = sum of `amount` over all `AppliedDiscount` entries (as `Money`).
+
+## Checkout totals (authoritative)
+
+Let `S` = cart subtotal and `R` = raw discount sum.
+
+- **`discount_total`** = `min(S, R)`.
+- **`total`** = `S - discount_total`.
+
+Therefore **`total` is never negative**, and **`discount_total` never exceeds `subtotal`**.
+
+### Authoritative fields
+
+`PriceSummary.subtotal`, `PriceSummary.discount_total`, and `PriceSummary.total` are **authoritative for checkout**.
+
+When `R > S` (e.g. stacked promotions), **`discount_total` is capped at `subtotal`** but each `AppliedDiscount.amount` remains the **nominal** discount computed by that promotion. So **`sum(d.amount for d in applied_discounts)` may be greater than `discount_total`**. Consumers must use `discount_total` and `total` for payable amounts; `applied_discounts` explain what each promotion computed.
+
+## Acceptance example (must remain covered by tests)
+
+Cart:
+
+- 2 × `SKU_A` at €10.00 each
+- 1 × `SKU_B` at €5.00
+
+Promotion: **10%** off **`SKU_A`** only.
+
+Expected:
+
+- **Subtotal**: €25.00  
+- **Discount** (10% of line A only): 2 × €10.00 × 10% = **€2.00**  
+- **Total**: **€23.00**  
+
+Explainability includes promotion id, **10%**, and **SKU_A** (and must not attribute discount to `SKU_B`).
+
+## Edge cases (expected test coverage)
+
+- **Per-line rounding**: Discount is computed per eligible line (or equivalent aggregation that preserves line-level `Money` rounding), not as a single unrounded aggregate on the whole cart subtotal × rate unless it matches those line results.
+- **Same SKU, multiple lines**: Allocations aggregate per SKU for one promotion application.
+- **Over-discount**: When nominal discounts sum above subtotal, `discount_total == subtotal`, `total == €0.00`, and `subtotal - discount_total == total`.
+
+## Implementation alignment
+
+This spec matches the intended behavior of:
+
+- `promo_engine.domain` (`Money`, `Cart`, `LineItem`, `PriceSummary`, `AppliedDiscount`, …)
+- `promo_engine.promotions.PercentOffSkusPromotion`
+- `promo_engine.engine.PromotionEngine`
+
+Where the implementation differs from this document, either the code or this spec should be updated so they agree.
