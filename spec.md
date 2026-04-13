@@ -114,7 +114,7 @@ This spec matches the intended behavior of:
 - `promo_engine.promotions` (`PromotionConstraints`, `PercentOffSkusPromotion`, `FixedAmountOffPromotion`, `ThresholdPromotion`, `BuyXGetYPromotion`)
 - `promo_engine.engine.PromotionEngine`
 
-`PromotionEngine.price` implements checkout totals exactly as in **Checkout totals (authoritative)**: it sums nominal `AppliedDiscount.amount` values, then sets `discount_total` to the lesser of that sum and `subtotal`, and `total = subtotal - discount_total`.
+`PromotionEngine.price` implements checkout totals exactly as in **Checkout totals (authoritative)**: it sums nominal `AppliedDiscount.amount` values into a raw total `R`, then sets `discount_total = min(subtotal, R)` and `total = subtotal - discount_total` (see `promo_engine/engine.py`). That matches the formulas above, including when `R > subtotal`.
 
 Where the implementation differs from this document, either the code or this spec should be updated so they agree.
 
