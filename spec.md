@@ -9,7 +9,7 @@ This document is normative for the Python package in this directory (`promo_engi
 
 ## Types (glossary)
 
-- **Money**: Decimal amount quantized to **two decimal places** using **ROUND_HALF_UP** on construction and on results of `Money` arithmetic that returns `Money`.
+- **Money**: Decimal amount quantized to **two decimal places** using **ROUND_HALF_UP** on construction and on results of `Money` arithmetic that returns `Money`. `str(Money(...))` uses a **€** prefix and two fractional digits for this kata (presentation only).
 - **Cart**: List of **line items**; each line has `product` (with `sku`), `quantity` (non-negative integer), and `unit_price` (`Money`).
 - **PricingContext**: Passed into `PromotionEngine.price`; the baseline percent-off-SKUs promotion **does not read** it (reserved for future promotions).
 - **AppliedDiscount**: One applied instance from a promotion: `promotion_id`, `amount` (`Money`, nominal for that promotion), `target` (`"line"` for this baseline), `details` (human-readable), optional `allocations` (`Sku` → `Money`, nominal per SKU, aggregated across lines).
@@ -87,4 +87,13 @@ This spec matches the intended behavior of:
 - `promo_engine.promotions.PercentOffSkusPromotion`
 - `promo_engine.engine.PromotionEngine`
 
+`PromotionEngine.price` implements checkout totals exactly as in **Checkout totals (authoritative)**: it sums nominal `AppliedDiscount.amount` values, then sets `discount_total` to the lesser of that sum and `subtotal`, and `total = subtotal - discount_total`.
+
 Where the implementation differs from this document, either the code or this spec should be updated so they agree.
+
+## Running tests
+
+From this directory (`promotion-engine-kata/python`):
+
+- **unittest**: `python -m unittest discover -s promo_engine/tests -p 'test_*.py' -v`
+- **pytest** (requires the dev dependency): `pytest`

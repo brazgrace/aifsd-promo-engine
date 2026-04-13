@@ -1,0 +1,23 @@
+[project]
+name = "promo-engine"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "brazgrace"}
+]
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv (>=1.2.2,<2.0.0)"
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+
+[tool.pytest.ini_options]
+testpaths = ["promo_engine/tests"]
+pythonpath = ["."]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
