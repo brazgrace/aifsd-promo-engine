@@ -4,7 +4,7 @@ This document is normative for the Python package in this directory (`promo_engi
 
 ## Scope
 
-- **In scope**: `PromotionEngine` orchestration; `PromotionConstraints` (time window, weekday, daypart, customer tags); `PercentOffSkusPromotion` (percentage off SKUs, optional `max_discount`); `FixedAmountOffPromotion`; `ThresholdPromotion` (spend threshold, fixed reward); `BuyXGetYPromotion` (bundle free units at cheapest unit prices); `BuyXPayYPromotion` (buy X pay Y / e.g. 3-for-2); `Money` / cart math; `PriceSummary` and `AppliedDiscount` explainability.
+- **In scope**: `PromotionEngine` orchestration and `StackingPolicy`; `PromotionConstraints` (time window, weekday, daypart, customer tags); `PercentOffSkusPromotion` (percentage off SKUs, optional `max_discount`); `FixedAmountOffPromotion`; `ThresholdPromotion` (spend threshold, fixed reward); `BuyXGetYPromotion` (bundle free units at cheapest unit prices); `BuyXPayYPromotion` (buy X pay Y / e.g. 3-for-2); `Money` / cart math; `PriceSummary` and `AppliedDiscount` explainability.
 - **Not covered here**: `PricingContext.channel` targeting (field exists for future use).
 
 ## Types (glossary)
@@ -70,13 +70,23 @@ If there are no eligible lines, the promotion is not applicable (no `AppliedDisc
 
 Examples (€10 unit, `buy_x=3`, `pay_y=2`): 3 units → €10 off; 4 units → one full group → still €10 off; 6 units → two groups → €20 off.
 
+## StackingPolicy (`PromotionEngine`)
+
+`PromotionEngine` takes an optional **`stacking_policy`** (`StackingPolicy` in `promo_engine.domain`, default **`STACK`**):
+
+- **`STACK`**: After sorting by **`priority` descending** then **`id`**, walk in order: apply each applicable promotion; if **`stackable` is False** for a promotion that runs, **later promotions are skipped** (same combination rule as before). Sum all produced discounts (then checkout cap).
+- **`EXCLUSIVE_BEST_FOR_CUSTOMER`**: **Every** applicable promotion is evaluated (`apply` called). The engine keeps only the candidate whose **total nominal discount** (sum of its `AppliedDiscount.amount`) is **largest**. Ties: higher **`priority`**, then lexicographically smaller **`promotion id`**, then earlier in the sorted list. Other applicable promotions are listed in **`skipped_due_to_combination_ids`**.
+- **`EXCLUSIVE_PRIORITY`**: Same full evaluation order; the **first** applicable promotion in that order that returns a **non-empty** discount list wins; all later applicable promotions are skipped (their ids in **`skipped_due_to_combination_ids`**).
+
+Example (3 × `SKU_A` @ €10, 10% off vs 3-for-2): nominal discounts **€3** vs **€10** — **STACK** applies both (€13); **EXCLUSIVE_BEST_FOR_CUSTOMER** applies only 3-for-2 (€10); **EXCLUSIVE_PRIORITY** with sort order putting 10% first applies only 10% (€3).
+
 ## Multi-promotion behavior
 
-Each promotion exposes **`priority`** (int, default `0`) and **`stackable`** (bool, default `True`).
+Each promotion exposes **`priority`** (int, default `0`) and **`stackable`** (bool, default `True`). Sorting is always **`priority` descending**, then **`id`** ascending.
 
-- **Order**: Promotions are sorted by **`priority` descending**, then by **`id`** string (ascending) for a stable tie-break. The engine walks that order (not the raw list order).
-- **Combination**: **`stackable == True`**: discount is applied and processing continues. **`stackable == False`**: discount is applied, then **no further promotions** are considered (lower priority after sort are **skipped**).
-- **Tracing**: `PriceSummary.not_applicable_promotion_ids` lists promotions for which `is_applicable` was false. `PriceSummary.skipped_due_to_combination_ids` lists promotions not evaluated for discount because a prior **non-stackable** promotion already ran.
+- **STACK mode**: **`stackable == True`**: discount is applied and processing continues. **`stackable == False`**: discount is applied, then **no further promotions** are considered (their ids go to **`skipped_due_to_combination_ids`** if they would have been applicable).
+- **Exclusive modes**: per-promotion **`stackable`** does not early-stop the evaluation pass; the **policy** chooses the winner set as above.
+- **Tracing**: `PriceSummary.not_applicable_promotion_ids` lists promotions for which `is_applicable` was false. `PriceSummary.skipped_due_to_combination_ids` lists promotions skipped due to **non-stackable** (STACK) or **stacking policy** (exclusive modes).
 - **Raw discount sum** = sum of `amount` over all `AppliedDiscount` entries actually produced (as `Money`).
 
 ## Checkout totals (authoritative)
@@ -121,7 +131,7 @@ Explainability includes promotion id, **10%**, and **SKU_A** (and must not attri
 
 This spec matches the intended behavior of:
 
-- `promo_engine.domain` (`Money`, `Cart`, `LineItem`, `PriceSummary`, `AppliedDiscount`, …)
+- `promo_engine.domain` (`Money`, `Cart`, `LineItem`, `PriceSummary`, `AppliedDiscount`, `StackingPolicy`, …)
 - `promo_engine.promotions` (`PromotionConstraints`, `PercentOffSkusPromotion`, `FixedAmountOffPromotion`, `ThresholdPromotion`, `BuyXGetYPromotion`, `BuyXPayYPromotion`)
 - `promo_engine.engine.PromotionEngine`
 

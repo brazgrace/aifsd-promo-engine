@@ -6,11 +6,24 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from promo_engine.domain import (
-    Money, Percentage, Quantity, Sku, PromotionId,
-    Product, LineItem, Cart, PricingContext, PriceSummary, AppliedDiscount
+    AppliedDiscount,
+    Cart,
+    LineItem,
+    Money,
+    Percentage,
+    PricingContext,
+    Product,
+    PromotionId,
+    Quantity,
+    Sku,
+    StackingPolicy,
 )
-from promo_engine.promotions import Promotion
 from promo_engine.engine import PromotionEngine
+from promo_engine.promotions import (
+    BuyXPayYPromotion,
+    PercentOffSkusPromotion,
+    Promotion,
+)
 
 
 # Stub promotions for testing
@@ -377,6 +390,70 @@ class TestPromotionEngine(unittest.TestCase):
         summary = engine.price(cart, self.context)
         self.assertEqual(summary.not_applicable_promotion_ids, (PromotionId("NOPE"),))
         self.assertEqual(len(summary.applied_discounts), 1)
+
+
+class TestStackingPolicyCartAcceptance(unittest.TestCase):
+    """STACK vs exclusive policies with 10% off and 3-for-2 on 3 × SKU_A @ €10."""
+
+    def setUp(self) -> None:
+        self.context = PricingContext(
+            now=datetime.now(timezone.utc),
+            channel="online",
+            customer_id="C1",
+            customer_tags=set(),
+        )
+        self.product = Product(Sku("SKU_A"), "A", "electronics")
+        self.cart = Cart(
+            [LineItem(self.product, Quantity(3), Money(Decimal("10.00")))]
+        )
+        self.percent = PercentOffSkusPromotion(
+            PromotionId("M-PCT"),
+            Percentage(Decimal("10")),
+            frozenset({Sku("SKU_A")}),
+        )
+        self.three_for_two = BuyXPayYPromotion(
+            PromotionId("Z-3F2"),
+            Sku("SKU_A"),
+            buy_x=3,
+            pay_y=2,
+        )
+
+    def test_stack_applies_both_percent_and_three_for_two(self) -> None:
+        engine = PromotionEngine(
+            [self.percent, self.three_for_two],
+            StackingPolicy.STACK,
+        )
+        summary = engine.price(self.cart, self.context)
+        self.assertEqual(summary.subtotal, Money(Decimal("30.00")))
+        self.assertEqual(summary.discount_total, Money(Decimal("13.00")))
+        self.assertEqual(summary.total, Money(Decimal("17.00")))
+
+    def test_exclusive_best_keeps_only_three_for_two(self) -> None:
+        engine = PromotionEngine(
+            [self.percent, self.three_for_two],
+            StackingPolicy.EXCLUSIVE_BEST_FOR_CUSTOMER,
+        )
+        summary = engine.price(self.cart, self.context)
+        self.assertEqual(summary.discount_total, Money(Decimal("10.00")))
+        self.assertEqual(summary.total, Money(Decimal("20.00")))
+        self.assertEqual(len(summary.applied_discounts), 1)
+        self.assertEqual(
+            summary.skipped_due_to_combination_ids,
+            (PromotionId("M-PCT"),),
+        )
+
+    def test_exclusive_priority_first_promo_wins(self) -> None:
+        """M-PCT sorts before Z-3F2; first with a discount wins (10% only)."""
+        engine = PromotionEngine(
+            [self.percent, self.three_for_two],
+            StackingPolicy.EXCLUSIVE_PRIORITY,
+        )
+        summary = engine.price(self.cart, self.context)
+        self.assertEqual(summary.discount_total, Money(Decimal("3.00")))
+        self.assertEqual(
+            summary.skipped_due_to_combination_ids,
+            (PromotionId("Z-3F2"),),
+        )
 
 
 if __name__ == '__main__':

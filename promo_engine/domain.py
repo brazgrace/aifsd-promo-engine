@@ -4,7 +4,16 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
+from enum import StrEnum
 from typing import Literal, Self
+
+
+class StackingPolicy(StrEnum):
+    """How ``PromotionEngine`` combines discounts from multiple applicable promotions."""
+
+    STACK = "stack"
+    EXCLUSIVE_BEST_FOR_CUSTOMER = "exclusive_best_for_customer"
+    EXCLUSIVE_PRIORITY = "exclusive_priority"
 
 
 @dataclass(frozen=True)
